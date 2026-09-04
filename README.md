@@ -761,6 +761,21 @@ docker compose exec -T database sh -c 'mariadb -umangos -pmangos mangos' \
 `Login failed: Version mismatch`。**SRP6 密码校验本身不受影响**——失败只发生在版本证明
 这一步，所以很容易误判成账号或密码问题，用 `bin/auth-check.py` 可以把两者分开。
 
+## Claude Code Skill
+
+`.claude/skills/vanilla-wow-local/` 是一个 **submodule**，指向
+[vvenv/wow-vanilla-server-mac](https://github.com/vvenv/wow-vanilla-server-mac) ——
+同一套流程打包成的 Claude Code Skill，单独一个仓库是为了能在别的项目里也用上。
+克隆本仓库时带上它：
+
+```sh
+git clone --recurse-submodules https://github.com/vvenv/wow.git
+# 已经克隆过了：
+git submodule update --init
+```
+
+改 skill 请到那个仓库里改，这边只跟一个指针 —— 两处各改一份必然漂移。
+
 ## 关于游戏资源
 
 本仓库**不包含也不分发任何暴雪的游戏资源、二进制或代码**。所有 MPQ、DBC、美术资源

@@ -1,0 +1,3 @@
+[submodule ".claude/skills/vanilla-wow-local"]
+	path = .claude/skills/vanilla-wow-local
+	url = https://github.com/vvenv/wow-vanilla-server-mac.git
