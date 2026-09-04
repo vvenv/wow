@@ -22,16 +22,46 @@ enum LaunchError: LocalizedError {
 /// 这期间关掉最后一个窗口不能让 app 退出
 var waitingForGame = false
 
+/// 起飞之后怎么把窗口弄成「满屏」。
+///
+/// 为什么分两种：**在非主显示器上做 macOS 原生全屏，这个客户端会黑屏**。
+/// 逐项测出来的 ——
+///
+///     主屏 窗口 + 一次 Reset（1512x945 → 917）      有画面
+///     副屏 窗口，全屏之前（1352x878）                有画面
+///     主屏 原生全屏（Reset → 1512x949）              有画面
+///     副屏 原生全屏（Reset → 1920x1080）             黑（有指针、有声音，CPU 126%）
+///
+/// 所以坏的既不是 D3D 的 Reset（主屏那两次都 Reset 了，没事），也不是原生全屏
+/// 本身。注意主屏那次全屏后客户区是 1512x949 —— 工作区，没铺满整屏；副屏那次是
+/// 1920x1080，正好等于整块屏。Wine 的 macdrv 对「窗口恰好等于整屏」有自己一套
+/// fullscreen 处理，跟 macOS 的全屏 Space 撞在一起就黑。
+enum FillMode {
+    /// 不动尺寸，就是个窗口
+    case none
+    /// macOS 原生全屏。自带一个 Space，三指滑就能切进切出 —— 只在主屏上用。
+    case nativeFullScreen
+    /// 无边框窗口铺满目标屏。没有专属 Space，但在副屏上这是唯一不黑的走法。
+    case coverScreen
+}
+
 /// 这次怎么起飞。在写 Config.wtf 之前就要定下来 ——
 /// 走哪条决定了写进去的窗口 cvar 和分辨率。
 enum LaunchPlan {
-    /// 窗口模式起飞，等窗口出来再用辅助功能 API 挪到目标屏 / 进 macOS 原生全屏。
-    /// 显示器排列一点都不用碰，而且原生全屏自带一个 Space。
-    case native(target: DisplayInfo?, fullscreen: Bool)
+    /// 窗口模式起飞，等窗口出来再用辅助功能 API 挪到目标屏、按 fill 摆成满屏。
+    /// 显示器排列一点都不用碰。
+    case native(target: DisplayInfo?, fill: FillMode)
     /// 就在当前主屏开，execv 换掉自己。
     case plain
 
     var isNative: Bool { if case .native = self { return true }; return false }
+
+    var fill: FillMode {
+        switch self {
+        case .native(_, let f): return f
+        case .plain:            return .none
+        }
+    }
 
     var target: DisplayInfo? {
         switch self {
@@ -86,13 +116,19 @@ enum Launcher {
         // 显示模式。
         let target = plan.target ?? Displays.main
 
-        // 走原生全屏那条路时，「无边框满屏」写的是窗口 cvar ——
-        // Wine 的 adjustFullScreenBehavior: 不给 maximized 的窗口全屏按钮。
-        // 满屏是一会儿交给 macOS 做的，视觉结果一样，还多一个专属 Space。
+        // 两条满屏的路都要**窗口** cvar（gxWindow 1 + gxMaximize 0），原因不同：
+        // - nativeFullScreen：Wine 的 adjustFullScreenBehavior: 明确排除 maximized
+        //   的窗口，gxMaximize=1 根本拿不到全屏按钮。
+        // - coverScreen：gxMaximize=1 开出来的是个 popup（没有 WS_CAPTION），
+        //   Wine 那边确实没标题栏 —— 但它**不可缩放**，AXSize 直接被忽略，
+        //   窗口会一直是主屏那么大（实测：挪到副屏了，尺寸纹丝不动 1512x982）。
+        //   而 coverScreen 就是靠 AXSize 把窗口拉到目标屏那么大的，所以只能用
+        //   带标题栏的可缩放窗口，代价是顶上留一条标题栏。
         let native = plan.isNative
-        cfg.set(native && s.displayMode == .borderless
-                ? DisplayMode.windowed.cvars
-                : s.displayMode.cvars)
+        switch plan.fill {
+        case .nativeFullScreen, .coverScreen: cfg.set(DisplayMode.windowed.cvars)
+        case .none:                           cfg.set(s.displayMode.cvars)
+        }
 
         // gxResolution 必须是**主适配器**认的档位，跟游戏最后跑在哪块屏没关系。
         // 不在那张表里客户端就直接掉回 800x600（实测：1512x850 合桌面但不在表里
@@ -223,11 +259,15 @@ enum Launcher {
         // 独占全屏不走原生全屏：客户端自己去换显示模式了，
         // 没有一个普通窗口可以交给 macOS。
         if s.displayMode != .fullscreen, Native.trusted {
-            let wantsFullscreen = s.displayMode == .borderless
             let needsMove = !(target?.isMain ?? true)
+            // 满屏怎么做取决于在哪块屏：主屏用 macOS 原生全屏（白拿一个 Space），
+            // 副屏只能用无边框铺满 —— 原生全屏在副屏上会黑，见 FillMode。
+            let fill: FillMode = s.displayMode == .borderless
+                ? (needsMove ? .coverScreen : .nativeFullScreen)
+                : .none
             // 窗口模式又不用挪屏的话没什么可做的，让它走 execv 更干净
-            if wantsFullscreen || needsMove {
-                return .native(target: target, fullscreen: wantsFullscreen)
+            if fill != .none || needsMove {
+                return .native(target: target, fill: fill)
             }
         }
         return .plain
@@ -238,10 +278,10 @@ enum Launcher {
         guard !gameIsRunning() else { throw LaunchError.alreadyRunning }
 
         switch plan {
-        case .native(let target, let fullscreen):
+        case .native(let target, let fill):
             try spawn(s)
             detach {
-                Native.place(on: target, fullscreen: fullscreen)
+                Native.place(on: target, fill: fill)
                 // 全屏切换的动画交给 WindowServer，稍等一下再走
                 Thread.sleep(forTimeInterval: 1.5)
                 // 这条路没有需要恢复的东西，活儿干完直接退

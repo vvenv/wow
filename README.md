@@ -129,7 +129,7 @@ ssh "$SERVER_SSH_USER@$SERVER_HOST" \
 | **常规** | 语言 | 决定启动哪个客户端目录，并写 `Config.wtf` 的 `SET locale` |
 | | 服务器 | 线上 / 本地 / 自定义 —— 同时写 `realmlist.wtf` 和 `Config.wtf` 的 `SET realmList` |
 | | 下次直接进游戏 | 存进 `launcher.json`，见下 |
-| **画面** | 模式 | 全屏 / 窗口 / 独占全屏。「全屏」在有辅助功能授权时走 macOS 原生全屏(独占一个 Space);没授权时退化成无边框满屏 |
+| **画面** | 模式 | 全屏 / 窗口 / 独占全屏。「全屏」有辅助功能授权时:目标是主屏走 macOS 原生全屏(独占一个 Space),目标是副屏走窗口铺满(顶上留 60pt,原因见下);没授权时退化成无边框满屏 |
 | | 显示器 | 让游戏开在哪块屏。默认「跟着这个面板走」——把面板拖到哪块屏，游戏就开在哪块；面板会开在你上次放它的地方。见下面「跑在副屏上」 |
 | | 分辨率 | `gxResolution`；候选只列**主显示器**认的档位，别的值客户端会掉回 800x600，见下面「跑在副屏上」 |
 | | 帧率上限 | `dxvk.conf` 的 `d3d9.maxFrameRate`（不是游戏 cvar）|
@@ -170,14 +170,42 @@ strings -a client-zhCN/WoW_tweaked.exe | grep -oE '^gx[A-Za-z]+$' | sort -u
 桌面原点,原点永远是主显示器。所以这件事只能在 macOS 那一侧解。启动器里有两条路,
 `Launcher.plan(_:)` 决定走哪条。
 
-**① 有辅助功能授权 → 辅助功能 API + 原生全屏(默认走这条)**
+**① 有辅助功能授权 → 辅助功能 API 摆窗口(默认走这条)**
 
-客户端开出来的是个普通 Cocoa 窗口,`AXPosition` 能挪、`AXFullScreen` 能全屏,而 macOS 的
-原生全屏本来就会**自动给这个窗口开一个专属 Space** —— 「新建一个桌面」这件事等于白拿。
+客户端开出来的是个普通 Cocoa 窗口,`AXPosition` 能挪、`AXSize` 能改尺寸、`AXFullScreen`
+能全屏。满屏怎么做**取决于目标是哪块屏**(`FillMode`):
 
-所以「无边框满屏」这一项在这条路上写的是**窗口** cvar(`gxWindow 1` + `gxMaximize 0`),
-起飞后再交给 macOS 变全屏。之所以必须窗口模式:Wine 的 `adjustFullScreenBehavior:`
-明确排除 maximized 的窗口,`gxMaximize 1` 根本拿不到全屏按钮。
+| 目标屏 | 做法 | 结果 |
+|---|---|---|
+| 主屏 | `AXFullScreen` —— macOS 原生全屏 | 铺满,自带一个专属 Space,三指滑就能切进切出 |
+| 副屏 | `AXSize` 把窗口拉到那块屏那么大 | 铺满,但顶上留 30pt 菜单栏 + 32pt 标题栏 |
+
+**为什么副屏不能也用原生全屏:会黑屏。** 逐项测出来的 ——
+
+```
+主屏 窗口 1512x945 → 被 Cocoa 压到 917(一次 Reset)      有画面
+主屏 原生全屏      → Reset 到 1512x949                   有画面
+副屏 窗口 1352x878 → 不 Reset                            有画面
+副屏 AX 拉到 1920x1050 → Reset 到 1920x1018              有画面
+副屏 原生全屏      → Reset 到 1920x1080                  黑（有指针、有声音、CPU 126%）
+```
+
+只有最后一行黑,而且 D3D 的 `Reset` 本身是能扛的(前四行有三行都 Reset 了)。日志一句
+err/warn 都没有,交换链健康,进程满负荷在渲染 —— 黑的只是画面。试过「先把窗口拉到铺满、
+让 Reset 在普通窗口状态下发生完,再进原生全屏」,全屏那一步不生效,白跑。
+
+两条路都写**窗口** cvar(`gxWindow 1` + `gxMaximize 0`),原因不同:原生全屏那条是因为
+Wine 的 `adjustFullScreenBehavior:` 明确排除 maximized 的窗口,`gxMaximize 1` 拿不到全屏
+按钮;拉尺寸那条是因为 `gxMaximize 1` 开出来的无边框窗口(WS_POPUP,确实没标题栏)在 Wine
+下**不可缩放**,`AXSize` 会被静默忽略 —— 实测挪到副屏了、尺寸纹丝不动还是主屏那么大。
+顶上那 60pt 边框就是这么来的:无边框和可缩放在这个客户端上二选一。
+
+> **那 60pt 去得掉,代价是动显示器排列。** 副屏一旦是主显示器,`1920x1080` 就成了合法的
+> `gxResolution`(为什么,见下一节),`gxMaximize 1` 的无边框窗口从创建那一刻就正好盖住副屏
+> —— 不缩放、不 Reset、不需要辅助功能授权,也就没有黑屏的触发条件。这正是②那条被删掉的
+> 兜底路,它真的做到过:`client-zhCN/Screenshots/` 里 2026-09-03 上午那四张 TGA 就是
+> 1920x1080(TGA 头写的就是后台缓冲尺寸),当天下午那条路删掉之后,截图分辨率再没超过
+> 1512x982。所以「不动排列」和「副屏完美全屏」在这个客户端上是互斥的,得挑一个。
 
 **`gxResolution` 千万别写成目标屏的尺寸。** 客户端建 D3D 设备时只认**主显示器**那张模式表
 (D3D adapter 0),不在表里就直接掉回 800x600 —— 而副屏的原生分辨率几乎注定不在主屏那张表里
@@ -287,7 +315,7 @@ Wine 处理 `WM_MOVE` 要多久没有定数,副屏在负坐标区时 macdrv 还�
 
 `launcher/build.sh` 重新编译（要 Xcode 的 swiftc，会自动收 `launcher/*.swift`），
 产物直接覆盖 `WoW.app`。源码分五块：`Model.swift`（设置与 Config.wtf 读写）、
-`Displays.swift`（显示器枚举、主适配器模式表、起飞尺寸）、`Native.swift`（辅助功能 API 挪窗口 + 原生全屏）、
+`Displays.swift`（显示器枚举、主适配器模式表、起飞尺寸）、`Native.swift`（辅助功能 API 挪窗口 / 拉尺寸 / 原生全屏）、
 `Launch.swift`（`LaunchPlan` 与起飞的三条路）、`ContentView.swift` + `main.swift`（面板与入口）。
 
 **为什么是分页而不是折叠区**：`Form` 的 `.grouped` 样式自带一个 `ScrollView`，内容一多
