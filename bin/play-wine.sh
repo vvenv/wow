@@ -25,6 +25,11 @@ elif [ -f "$DIR/WoW_tweaked.exe" ]; then EXE=WoW_tweaked.exe
 elif [ -f "$DIR/WoW.exe" ]; then EXE=WoW.exe
 else echo "no WoW.exe / WoW_tweaked.exe in $DIR" >&2; exit 1; fi
 
+# Re-apply after vanilla-tweaks regenerates the exe. No-op if already patched.
+if [ "$EXE" = "WoW_tweaked.exe" ]; then
+  python3 "$ROOT/bin/patch-itemc-nullguard.py" "$DIR/$EXE" >/dev/null
+fi
+
 # Force windowed mode. Exclusive fullscreen is the one setting that reliably
 # breaks this client under Wine (the mode switch hangs on restore). The window
 # opens at gxResolution rather than filling the screen -- set MAXIMIZE=1 for the

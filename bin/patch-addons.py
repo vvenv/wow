@@ -130,6 +130,23 @@ def patch_atlas(addons):
         len(missing), len(glob_missing))
 
 
+def patch_bagshui_xml(addons):
+    """Drop the include for Ui.Skin.lua — that file was never in 1.0.5.
+
+    FrameXML logs `Error loading ...\\Ui.Skin.lua` every login. Skin setup
+    already lives in Components/Skins.lua, which is included later.
+    """
+    p = os.path.join(addons, "Bagshui/Bagshui.xml")
+    if not os.path.exists(p):
+        return "Bagshui.xml: not found, skipped"
+    src = read(p)
+    old = '<Include file="Components\\Ui.Skin.lua" />'
+    if old not in src:
+        return "Bagshui.xml: Ui.Skin.lua include already gone"
+    write(p, src.replace(old, "<!-- Ui.Skin.lua was never shipped in 1.0.5; Skins.lua covers this. -->"))
+    return "Bagshui.xml: removed missing Ui.Skin.lua include"
+
+
 def patch_bagshui(addons):
     p = os.path.join(addons, "Bagshui/Components/ActiveQuestItems.lua")
     if not os.path.exists(p):
@@ -213,7 +230,7 @@ def patch_atlasloot(addons):
 
 def main():
     addons = sys.argv[1]
-    for line in (patch_atlas(addons), patch_atlasloot(addons), patch_bagshui(addons)):
+    for line in (patch_atlas(addons), patch_atlasloot(addons), patch_bagshui(addons), patch_bagshui_xml(addons)):
         print("    " + line)
 
 
