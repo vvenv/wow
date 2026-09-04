@@ -1,0 +1,21 @@
+# 本机私有配置。复制成 server.conf 再填自己的值 —— server.conf 不入库。
+#
+#   cp server.conf.example server.conf
+#
+# 只跑本地服的话整个文件都可以不要：不存在时脚本只提供本地，
+# 启动器的「服务器」下拉里也不会出现「线上」。
+#
+# 这里的键名和环境变量名是同一套 —— 想临时换一台，直接
+#   SERVER_HOST=1.2.3.4 bin/auth-check.py <账号> <密码>
+# 环境变量优先于这个文件。
+
+# 服务器地址（IP 或域名）。留空 = 没有线上服。
+# 有些命令认 local / 127.0.0.1，表示打本机那份。
+SERVER_HOST=
+
+# 连它的 SSH 用户
+SERVER_SSH_USER=root
+
+# SSH 口令。优先用密钥认证；只有对端不收密钥时才需要填这个。
+# 填了就别把这个文件给别人看。
+SERVER_SSH_PASSWORD=

@@ -1,0 +1,19 @@
+# 暴雪的游戏资源和服务端数据 —— 绝对不能入库
+/client
+/client-zhCN
+/vmangos-deploy
+/downloads
+
+# 第三方插件（各有各的来源和许可，用 bin/install-addons.sh 装）
+/addons
+
+# 本机私有配置：服务器地址、SSH 用户
+/server.conf
+
+# 启动器的个人选择
+/launcher.json
+
+# 编译产物（跑 launcher/build.sh 生成）
+/WoW.app
+
+.DS_Store
