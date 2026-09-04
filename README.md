@@ -395,7 +395,20 @@ cd client && wine vanilla-tweaks.exe --maxcameradistance 100 WoW.exe
 只有 max camera distance 默认不开，所以要显式给参数。打完用
 `/console CameraDistanceMax 100` 才真正拉远。
 
-改完 exe 记得 `WoW.exe` 本身没动，随时可以重打。
+改完 exe 记得 `WoW.exe` 本身没动，随时可以重打。重打时**记得把
+`--maxcameradistance 100` 也带上**——它是 vanilla-tweaks 的参数，不带就退回 50。
+
+### itemc nullguard
+
+`bin/patch-itemc-nullguard.py` 是在 vanilla-tweaks 之上再打的一处手工补丁，
+`bin/play-wine.sh` 每次启动会自动重打（已经打过就静默，出任何意外都会在终端出声，
+但绝不挡启动），所以重跑 vanilla-tweaks 之后不用管它。
+
+补的是 `0x004C7EE0` 那个装备槽标志刷新函数：它无条件写 `[0xB71F60]` 指向的
+12 个 DWORD，而那个全局指针在某些时机是 NULL，AoE 拾取时会 `ERROR #132
+ACCESS_VIOLATION at 0x004C7F1B` 崩掉客户端（2026-09-04 在哀嚎洞穴中过一次，
+崩溃时的存档还把半成品物品寄了出来）。补丁在函数入口加一个空指针检查，
+是空就直接返回。原始 exe 备份在 `WoW_tweaked.exe.pre-itemc-nullguard`。
 
 ## 插件
 

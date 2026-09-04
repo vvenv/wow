@@ -20,14 +20,20 @@ case "$DIR" in /*) ;; *) DIR="$ROOT/$DIR" ;; esac
 WS="/Applications/WoWSilicon.app/Contents/Resources"
 [ -x "$WS/Wine/bin/wine" ] || { echo "WoWSilicon not found at /Applications" >&2; exit 1; }
 
-if [ -n "${EXE:-}" ]; then :
+if [ -n "${EXE:-}" ]; then
+  [ -f "$DIR/$EXE" ] || { echo "no $EXE in $DIR" >&2; exit 1; }
 elif [ -f "$DIR/WoW_tweaked.exe" ]; then EXE=WoW_tweaked.exe
 elif [ -f "$DIR/WoW.exe" ]; then EXE=WoW.exe
 else echo "no WoW.exe / WoW_tweaked.exe in $DIR" >&2; exit 1; fi
 
 # Re-apply after vanilla-tweaks regenerates the exe. No-op if already patched.
+# A binary patch must never block the launch, so the exit code is swallowed on
+# purpose -- but say something whenever the result is not the boring one, or a
+# silently unpatched exe would just crash again in the next AoE pull.
 if [ "$EXE" = "WoW_tweaked.exe" ]; then
-  python3 "$ROOT/bin/patch-itemc-nullguard.py" "$DIR/$EXE" >/dev/null
+  msg="$(python3 "$ROOT/bin/patch-itemc-nullguard.py" "$DIR/$EXE" 2>&1)" \
+    || msg="itemc nullguard patch failed: $msg"
+  case "$msg" in *"already patched"*) ;; *) printf '%s\n' "$msg" >&2 ;; esac
 fi
 
 # Force windowed mode. Exclusive fullscreen is the one setting that reliably

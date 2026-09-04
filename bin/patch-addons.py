@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Local fixes for two upstream addon bugs that only bite on a zhCN client.
+"""Local fixes for upstream addon bugs, most of which only bite a zhCN client.
 
 Called at the end of bin/install-addons.sh so a reinstall does not lose them.
-Both patches are idempotent and print what they did.
+Every patch is idempotent and prints what it did.
 
   1. Atlas   -- every locale file REPLACES the AtlasLocale table instead of
                 merging into it, and the Chinese translation is from an older
@@ -19,6 +19,16 @@ Both patches are idempotent and print what they did.
                   ActiveQuestItems.lua:122: table index is nil
                 Fix: normalise the colon (the same thing pfQuest does) and skip
                 the entry when the objective still does not parse.
+
+  3. AtlasLoot -- the zhCN locale file came from a TBC-era AtlasLoot and
+                carries 200+ keys this 1.12 backport never defines, which
+                AceLocale-2.2 rejects one "Improper translation exists" error
+                at a time. Fix: comment out the keys with no enUS counterpart.
+
+  4. Bagshui.xml -- includes Components\\Ui.Skin.lua, a file 1.0.5 never
+                shipped, so FrameXML logs `Error loading ...\\Ui.Skin.lua` at
+                every login. Fix: drop the include; Components/Skins.lua, which
+                is included further down, already does the skin setup.
 """
 import os, re, sys
 
@@ -141,9 +151,17 @@ def patch_bagshui_xml(addons):
         return "Bagshui.xml: not found, skipped"
     src = read(p)
     old = '<Include file="Components\\Ui.Skin.lua" />'
+    new = "<!-- Ui.Skin.lua was never shipped in 1.0.5; Skins.lua covers this. -->"
+    if new in src:
+        return "Bagshui.xml: Ui.Skin.lua include already removed"
     if old not in src:
-        return "Bagshui.xml: Ui.Skin.lua include already gone"
-    write(p, src.replace(old, "<!-- Ui.Skin.lua was never shipped in 1.0.5; Skins.lua covers this. -->"))
+        # Do not report success just because the exact tag is absent -- an
+        # upstream reformat (or a release that finally ships the file) has to
+        # be visible, not silently swallowed.
+        if "Ui.Skin.lua" in src:
+            return "Bagshui.xml: Ui.Skin.lua still referenced but the include line changed, CHECK BY HAND"
+        return "Bagshui.xml: no Ui.Skin.lua include, nothing to do"
+    write(p, src.replace(old, new))
     return "Bagshui.xml: removed missing Ui.Skin.lua include"
 
 
