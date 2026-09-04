@@ -95,11 +95,14 @@ final class Model: ObservableObject {
     var displays: [DisplayInfo] { Displays.all() }
     var targetDisplay: DisplayInfo? { Displays.resolve(s.preferredDisplay) ?? Displays.main }
 
-    var resolutionChoices: [String] { Displays.choices(targetDisplay, retina: s.retinaMode) }
+    /// 候选只能是主适配器认的档位 —— 客户端建设备时只看那张表，
+    /// 列一个选了就掉 800x600 的值比不列更糟。跟目标屏是哪块无关。
+    var resolutionChoices: [String] { Displays.choices(retina: s.retinaMode) }
 
     var autoResolutionLabel: String {
-        let d = Displays.desktopSize(targetDisplay, retina: s.retinaMode)
-        return "跟随显示器（\(d.w)x\(d.h)）"
+        let d = Displays.desktopSize(Displays.main, retina: s.retinaMode)
+        let use = Displays.snap(d.w, d.h, retina: s.retinaMode)
+        return "跟随主显示器（\(use.w)x\(use.h)）"
     }
 
     /// 底栏那句摘要：不翻页也知道这一局会怎么开

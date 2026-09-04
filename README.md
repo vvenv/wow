@@ -130,8 +130,8 @@ ssh "$SERVER_SSH_USER@$SERVER_HOST" \
 | | 服务器 | 线上 / 本地 / 自定义 —— 同时写 `realmlist.wtf` 和 `Config.wtf` 的 `SET realmList` |
 | | 下次直接进游戏 | 存进 `launcher.json`，见下 |
 | **画面** | 模式 | 全屏 / 窗口 / 独占全屏。「全屏」在有辅助功能授权时走 macOS 原生全屏(独占一个 Space);没授权时退化成无边框满屏 |
-| | 显示器 | 让游戏开在哪块屏。默认「跟着这个面板走」——把面板拖到哪块屏，游戏就开在哪块。见下面「跑在副屏上」 |
-| | 分辨率 | `gxResolution`；「跟随显示器」按目标屏的桌面尺寸算 |
+| | 显示器 | 让游戏开在哪块屏。默认「跟着这个面板走」——把面板拖到哪块屏，游戏就开在哪块；面板会开在你上次放它的地方。见下面「跑在副屏上」 |
+| | 分辨率 | `gxResolution`；候选只列**主显示器**认的档位，别的值客户端会掉回 800x600，见下面「跑在副屏上」 |
 | | 帧率上限 | `dxvk.conf` 的 `d3d9.maxFrameRate`（不是游戏 cvar）|
 | | UI 缩放 | `uiScale` |
 | **声音** | 四条音量 | `MasterVolume` / `MusicVolume` / `SoundVolume` / `AmbienceVolume` |
@@ -176,12 +176,61 @@ strings -a client-zhCN/WoW_tweaked.exe | grep -oE '^gx[A-Za-z]+$' | sort -u
 原生全屏本来就会**自动给这个窗口开一个专属 Space** —— 「新建一个桌面」这件事等于白拿。
 
 所以「无边框满屏」这一项在这条路上写的是**窗口** cvar(`gxWindow 1` + `gxMaximize 0`),
-尺寸写成目标屏的完整桌面尺寸,起飞后再交给 macOS 变全屏。之所以必须窗口模式:Wine 的
-`adjustFullScreenBehavior:` 明确排除 maximized 的窗口,`gxMaximize 1` 根本拿不到全屏按钮。
-尺寸提前写准是为了进全屏时内容区尺寸不变,客户端不用重建交换链,也就不会被 DXVK 拉伸糊掉。
+起飞后再交给 macOS 变全屏。之所以必须窗口模式:Wine 的 `adjustFullScreenBehavior:`
+明确排除 maximized 的窗口,`gxMaximize 1` 根本拿不到全屏按钮。
 
-找窗口的判据是**全屏按钮**而不是标题或尺寸 —— wine 同时开着好几个窗口(菜单栏那条
-1920x30、几个隐藏的),只有真正的游戏窗口有 `kAXFullScreenButtonAttribute`。
+**`gxResolution` 千万别写成目标屏的尺寸。** 客户端建 D3D 设备时只认**主显示器**那张模式表
+(D3D adapter 0),不在表里就直接掉回 800x600 —— 而副屏的原生分辨率几乎注定不在主屏那张表里
+(这台机器上内置屏一个 16:9 的档位都没有)。实测:
+
+```
+gxResolution 1512x850   放得进桌面,但不在模式表里  → DXVK: Buffer size: 800x600
+gxResolution 1512x945   在模式表里                → DXVK: Buffer size: 1512x945
+```
+
+判据是「在不在表里」,不是「放不放得下」。这张表就是 `CGDisplayCopyAllDisplayModes`
+—— Wine 的 Mac driver 也是从这儿取模式的,RetinaMode 关着按「点」报、开着按像素报,
+所以启动器直接照抄(`Displays.primaryModes(retina:)`)。想自己看一眼:
+
+```sh
+cat > /tmp/modes.swift <<'EOF'
+import AppKit
+let id = CGMainDisplayID()
+let opts = [kCGDisplayShowDuplicateLowResolutionModes as String: true] as CFDictionary
+for m in (CGDisplayCopyAllDisplayModes(id, opts) as? [CGDisplayMode] ?? []) {
+    print("\(m.width)x\(m.height)   px \(m.pixelWidth)x\(m.pixelHeight)")
+}
+EOF
+swift /tmp/modes.swift | sort -u
+```
+
+好在跑起来的尺寸不靠 `gxResolution`:**客户端会跟着窗口大小 `Reset`**。所以起飞时只要给一个
+「开得出来、又不会被 Cocoa 压小」的合法档位(`Displays.safeWindowSize`),进原生全屏之后它
+自己就变成目标屏的尺寸,一比一,不拉伸。同一次实测的完整序列:
+
+```
+gxResolution 1352x878  →  Buffer size: 1352x878
+                          Device reset
+                       →  Buffer size: 1920x1080     ← 副屏原生尺寸,AX 全屏之后客户端自己跟上的
+```
+
+找窗口的第一道判据是**全屏按钮**(只有真正的顶层窗口有 `kAXFullScreenButtonAttribute`),
+但有按钮的不止一个,而 `kAXWindows` 的顺序是 z-order —— 取第一个就是抽签,抽中杂鱼窗口就会
+去挪它、给它全屏,游戏本体留在主屏不动。所以第二道判据是**取里面最大的**,并且不小于 640x480。
+同时开着的杂鱼长这样:
+
+```
+wine  bounds=(-210,-1080) 1920x32     ← 副屏的菜单栏条
+wine  bounds=(0,0)        1512x33     ← 主屏的菜单栏条
+wine  bounds=(0,482)      500x500     ← 几个隐藏的
+wine  bounds=(-210,-1080) 1920x1080   ← 游戏本体(name=魔兽世界)
+```
+
+挪窗口也必须**回读确认**。原来是「设一次 `AXPosition`,睡 0.5 秒,接着全屏」,那 0.5 秒是猜的:
+Wine 处理 `WM_MOVE` 要多久没有定数,副屏在负坐标区时 macdrv 还会把窗口往主屏拽回去。而且
+全屏之后只检查 `AXFullScreen == true`、不检查**在哪块屏** —— 一旦在主屏上全屏成功就返回 true
+收工,于是「有时候全屏跑到主屏来」。现在挪完轮询 `AXPosition`/`AXSize` 算交集面积确认落位,
+全屏后再确认一次屏幕,不对就退出全屏重来。
 
 这条路显示器排列一点都不碰,菜单栏和 Dock 不搬家,游戏自带一个 Space,三指滑就能切进切出。
 启动器等窗口出来、挪好、全屏,然后自己退掉。
@@ -192,18 +241,40 @@ strings -a client-zhCN/WoW_tweaked.exe | grep -oE '^gx[A-Za-z]+$' | sort -u
 > (`launcher/make-signing-identity.sh` 造一次,不需要 sudo),指定要求只跟证书绑定,
 > 重新编译不掉。「高级」页那一行显示当前状态。
 
-**② 没有授权 → 临时把目标屏设成主显示器(兜底)**
+**② 没有授权 → 老实在当前主屏开**
 
-`CGConfigureDisplayOrigin` 把目标屏的原点挪到 `(0,0)` 它就是主屏,公开 API,不需要任何权限。
-游戏退出后摆回去。排列在动手之前先写进 `launcher-display-restore.json`,启动器被强杀的话
-下次开面板会自动摆回来;用的是 `kCGConfigureForSession`,注销一次也会复原。
+`execv` 换掉自己,Dock 上那个图标直接变成游戏。面板会把授权状态摆在「高级」页上。
 
-代价是**玩的时候菜单栏和 Dock 会跟着搬到那块屏**,而且启动器不能 `execv` 掉自己 ——
-总要有人活着等游戏退出,所以它收起面板、切成 accessory(从 Dock 消失),在后台线程上守着。
+曾经还有第三条「临时把目标屏设成主显示器」当兜底(`CGConfigureDisplayOrigin` 是公开 API,
+不需要权限),已经删掉:它要把菜单栏和 Dock 都搬到副屏,还得留个进程守到游戏退出才能摆回排列,
+代价比它解决的问题大。
 
-**「显示器」那一项**默认是「跟着这个面板走」,取面板窗口所在的屏(`NSWindow.screen`)——
-想在哪块屏玩,把面板拖过去再点开始游戏。勾了「下次直接进游戏」时没有窗口,退而求其次用
-鼠标所在的屏。单屏时它和「当前主显示器」完全等价。
+**「显示器」那一项**默认是「跟着这个面板走」,判据就是**面板窗口此刻压在哪块屏上** ——
+想在哪块屏玩,把面板拖过去再点开始游戏。眼睛看得见,不用猜。
+
+> 取窗口的屏要用 `keyWindow` / `mainWindow`,别用「第一个可见窗口」碰运气;而且得用
+> `NSApplication.shared` 而不是 `NSApp` —— 跳过面板那条路上 AppKit 还没起来,`NSApp` 是 nil,
+> 碰一下就崩。
+
+**面板记住上次摆在哪**(`main.swift` 的 `PanelFrame`,存 `UserDefaults`)。不然这一项还是不稳:
+`NSWindow.center()` 落在 `NSScreen.main` ——「当前有键盘焦点的窗口在哪块屏」,每次开都可能不一样。
+存了之后把面板拖到副屏一次,以后每次都开在副屏,游戏也就每次都在副屏全屏。
+
+> **没用 AppKit 自带的 `setFrameAutosaveName` / `setFrameUsingName`。** 它存的是「窗口原点 +
+> 那块屏的 **`visibleFrame`**」,而 `visibleFrame` 里含菜单栏,菜单栏在哪块屏是随前台 App 变的:
+> 面板存在内置屏时那块屏是 `1512x949`,下次启动前如果前台 App 在副屏,内置屏就报 `1512x982`,
+> 对不上,`setFrameUsingName` 直接返回 `false`,窗口又回去抽签了 —— 实测出来的,不是猜的。
+> 另外 `setFrameAutosaveName` 一调就立刻把当前 frame 存一次,先设名字再读等于读自己刚写进去的值。
+>
+> 自己存的是「原点 + 那块屏的 `frame`」,`frame` 不含菜单栏、不随前台变。恢复时按 `frame` 找回
+> 那块屏,再把原点夹进它当前的 `visibleFrame`;那块屏不在了就退回 `center()`。
+
+勾了「下次直接进游戏」时根本没有面板,没有窗口可问,这时候退回**启动器进程刚起来那一刻鼠标
+所在的屏**(= 你双击图标的那块屏)。它必须在任何窗口出现**之前**抓
+(`Displays.captureLaunchDisplay()`,`main.swift` 第一行)—— 面板一摆出来,鼠标就跟着
+用户去点按钮了,再问就晚了。
+
+单屏时它和「当前主显示器」完全等价。
 
 **试过但走不通的两条**:Wine 虚拟桌面(`explorer /desktop=`)—— WoWSilicon 这个 Wine 里
 `explorer.exe` 自己就崩(SEH 异常);自己调私有 API 建 Space(`CGSSpaceCreate` 那套)——
@@ -216,7 +287,7 @@ strings -a client-zhCN/WoW_tweaked.exe | grep -oE '^gx[A-Za-z]+$' | sort -u
 
 `launcher/build.sh` 重新编译（要 Xcode 的 swiftc，会自动收 `launcher/*.swift`），
 产物直接覆盖 `WoW.app`。源码分五块：`Model.swift`（设置与 Config.wtf 读写）、
-`Displays.swift`（显示器枚举与排列切换）、`Native.swift`（辅助功能 API 挪窗口 + 原生全屏）、
+`Displays.swift`（显示器枚举、主适配器模式表、起飞尺寸）、`Native.swift`（辅助功能 API 挪窗口 + 原生全屏）、
 `Launch.swift`（`LaunchPlan` 与起飞的三条路）、`ContentView.swift` + `main.swift`（面板与入口）。
 
 **为什么是分页而不是折叠区**：`Form` 的 `.grouped` 样式自带一个 `ScrollView`，内容一多

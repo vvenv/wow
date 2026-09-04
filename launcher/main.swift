@@ -1,6 +1,10 @@
 import AppKit
 import SwiftUI
 
+// 用户是从哪块屏上双击的图标。只在「下次直接进游戏」那条路上用得着 ——
+// 那条路根本不开面板，没有窗口可问。必须在任何窗口出现之前抓。
+Displays.captureLaunchDisplay()
+
 // 「下次直接进游戏」：按住 ⌥ 双击才弹面板。
 // 游戏已经在跑的时候永远弹面板 —— 直接 exec 会撞上「已经开着了」，
 // 用户得看见那句话，而不是一个闪一下就没的图标。
@@ -82,7 +86,52 @@ private func armSnapshot(_ window: NSWindow) {
 }
 private var snapshotSource2: DispatchSourceSignal?
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+// ---------------------------------------------------------------------------
+// 面板开在上次那个地方
+//
+// 「跟着这个面板走」的判据是面板窗口在哪块屏，而 NSWindow.center() 落在
+// NSScreen.main ——「当前有键盘焦点的窗口在哪块屏」，每次开都可能不一样。
+// 存一下位置这一项才是稳的：把面板拖到副屏一次，以后每次都开在副屏，
+// 游戏也就每次都在副屏全屏。
+//
+// 没用 AppKit 自带的 setFrameAutosaveName / setFrameUsingName —— 它存的是
+// 「窗口原点 + 那块屏的 **visibleFrame**」，而 visibleFrame 里含菜单栏，
+// 菜单栏在哪块屏是随前台 App 变的：面板存在内置屏时那块屏是 1512x949，
+// 下次启动前如果前台 App 在副屏，内置屏就报 1512x982，对不上，
+// setFrameUsingName 直接返回 false，窗口又回去抽签了。实测出来的，不是猜的。
+//
+// 所以自己存：原点 + 那块屏的 frame。frame 不含菜单栏，不随前台变。
+// （另外 setFrameAutosaveName 一调就立刻把当前 frame 存一次，先设名字再读
+// 等于读自己刚写进去的值 —— 那条路还有这个坑。）
+// ---------------------------------------------------------------------------
+enum PanelFrame {
+    private static let key = "panelFrame"
+
+    /// "originX originY screenX screenY screenW screenH"
+    static func save(_ w: NSWindow) {
+        guard let s = w.screen else { return }
+        let o = w.frame.origin, f = s.frame
+        UserDefaults.standard.set(
+            "\(o.x) \(o.y) \(f.origin.x) \(f.origin.y) \(f.width) \(f.height)", forKey: key)
+    }
+
+    /// 恢复成功返回 true。没存过、或者那块屏已经不在了就返回 false，让调用方 center()。
+    static func restore(_ w: NSWindow) -> Bool {
+        guard let text = UserDefaults.standard.string(forKey: key) else { return false }
+        let v = text.split(separator: " ").compactMap { Double($0) }
+        guard v.count == 6 else { return false }
+        let want = CGRect(x: v[2], y: v[3], width: v[4], height: v[5])
+        guard let screen = NSScreen.screens.first(where: { $0.frame == want }) else { return false }
+        // 夹进可用区：菜单栏和 Dock 可能跟上次不一样，别让标题栏藏到菜单栏后面
+        let area = screen.visibleFrame, size = w.frame.size
+        w.setFrameOrigin(CGPoint(
+            x: min(max(v[0], area.minX), max(area.minX, area.maxX - size.width)),
+            y: min(max(v[1], area.minY), max(area.minY, area.maxY - size.height))))
+        return true
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var window: NSWindow?
 
     func applicationDidFinishLaunching(_ note: Notification) {
@@ -101,11 +150,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         host.view.wantsLayer = true
         host.view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         w.setContentSize(host.view.fittingSize)
-        w.center()
+        if !PanelFrame.restore(w) { w.center() }
+        w.delegate = self                // 之后用户拖窗口，windowDidMove 里存
         w.makeKeyAndOrderFront(nil)
+        // 头一次开（还没存过、走了 center()）也得存下来 —— 上面那句 center()
+        // 在 delegate 挂上之前就跑完了，windowDidMove 收不到。
+        PanelFrame.save(w)
         window = w
         armSnapshot(w)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func windowDidMove(_ note: Notification) {
+        guard let w = note.object as? NSWindow else { return }
+        PanelFrame.save(w)
     }
 
     /// 后台干活的时候没有窗口，但不能退 —— 退了就没人给游戏窗口做全屏了

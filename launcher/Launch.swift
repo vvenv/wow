@@ -83,7 +83,7 @@ enum Launcher {
         do { try realmline.write(to: Paths.realmlistWTF(s.language), atomically: true, encoding: .utf8) }
         catch { throw LaunchError.write(error.localizedDescription) }
 
-        // 显示模式。尺寸按「游戏最后会跑在哪块屏」算，不是按现在的主屏。
+        // 显示模式。
         let target = plan.target ?? Displays.main
 
         // 走原生全屏那条路时，「无边框满屏」写的是窗口 cvar ——
@@ -94,21 +94,28 @@ enum Launcher {
                 ? DisplayMode.windowed.cvars
                 : s.displayMode.cvars)
 
+        // gxResolution 必须是**主适配器**认的档位，跟游戏最后跑在哪块屏没关系。
+        // 不在那张表里客户端就直接掉回 800x600（实测：1512x850 合桌面但不在表里
+        // → 800x600），而副屏的原生分辨率几乎注定不在主屏那张表里 —— 原来按目标屏
+        // 尺寸写，正是「在副屏全屏了但画面没填满」的根。
+        //
+        // 真正跑起来的尺寸不靠它：客户端跟着窗口大小 Reset，进原生全屏之后自己
+        // 就变成目标屏的尺寸，一比一，不拉伸。详见 Displays.primaryModes。
+        //
+        // 三条路都要写 —— 「无边框满屏 + 没有辅助功能授权」那条原来一个字都不写，
+        // 于是沿用上次退出时客户端回写的值，同样会掉 800x600。
+        let picked = s.resolution.split(separator: "x").compactMap { Int($0) }
+        let size: (w: Int, h: Int)
         if native && s.displayMode == .borderless {
-            // 尺寸必须正好是目标屏的桌面尺寸：进全屏时内容区尺寸不变，
-            // 客户端就不用重建交换链，也不会被 DXVK 拉伸糊掉。
-            let d = Displays.desktopSize(target, retina: s.retinaMode)
-            cfg.set("gxResolution", "\(d.w)x\(d.h)")
-        } else if s.displayMode.usesResolution {
-            let res: String
-            if s.resolution == "auto" {
-                let d = Displays.desktopSize(target, retina: s.retinaMode)
-                res = "\(d.w)x\(d.h)"
-            } else {
-                res = s.resolution
-            }
-            cfg.set("gxResolution", res)
+            size = Displays.safeWindowSize(retina: s.retinaMode)
+        } else if s.displayMode.usesResolution, s.resolution != "auto", picked.count == 2 {
+            size = Displays.snap(picked[0], picked[1], retina: s.retinaMode)
+        } else {
+            // auto，以及无边框但走不了原生全屏（gxMaximize=1）那条
+            let d = Displays.desktopSize(Displays.main, retina: s.retinaMode)
+            size = Displays.snap(d.w, d.h, retina: s.retinaMode)
         }
+        cfg.set("gxResolution", "\(size.w)x\(size.h)")
         cfg.set("gxRefresh", String(target?.refresh ?? 60))
         cfg.set("gxApi", "d3d9")            // DXVK 的 d3d9.dll 认这个
 
