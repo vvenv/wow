@@ -135,18 +135,22 @@ enum Native {
     /// 就是干干净净的 0 个窗口，查不出任何毛病。启动器起完游戏就把面板收了、
     /// 切成 accessory，游戏那个 app 从来没被激活过，于是这里永远等不到窗口。
     /// 所以必须主动 activate 它一下。反正玩家本来就要游戏在前台，不算副作用。
-    private static func waitForWindow(_ timeout: TimeInterval,
-                                      needsFullScreenButton: Bool) -> AXUIElement? {
+    private static func waitForWindow(_ timeout: TimeInterval, needsFullScreenButton: Bool)
+        -> (win: AXUIElement, app: NSRunningApplication)? {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             for pid in winePIDs() {
                 guard let running = NSRunningApplication(processIdentifier: pid),
                       running.activationPolicy == .regular else { continue }
-                if let w = window(of: pid, needsFullScreenButton: needsFullScreenButton) { return w }
+                if let w = window(of: pid, needsFullScreenButton: needsFullScreenButton) {
+                    return (w, running)
+                }
                 // 空数组多半就是「没在前台」，推它一把再看
                 running.activate()
                 Thread.sleep(forTimeInterval: 0.6)
-                if let w = window(of: pid, needsFullScreenButton: needsFullScreenButton) { return w }
+                if let w = window(of: pid, needsFullScreenButton: needsFullScreenButton) {
+                    return (w, running)
+                }
             }
             Thread.sleep(forTimeInterval: 0.5)
         }
@@ -184,14 +188,33 @@ enum Native {
         return screenOf(win) == target.id
     }
 
-    /// 把窗口拉到正好盖住整块目标屏。设完回读确认，Wine 那边可能吃掉一次。
+    /// 把窗口拉到**正好**盖住整块目标屏。
+    ///
+    /// 「正好」很重要：frame 恰好等于所在屏的 frame，是 Wine macdrv 自己那套
+    /// fullscreen 处理的触发条件（抬窗口层级、盖住菜单栏）。差一个像素都不算。
+    ///
+    /// ⚠️ 设 frame 之前必须先把游戏切到后台。目标屏一旦是前台屏就会挂上菜单栏，
+    /// 它的 visibleFrame 缩掉 30pt，Cocoa 的 constrainFrameRect:toScreen: 就把
+    /// 窗口往下钳 30pt —— frame 永远差那么一条，够不到触发条件（实测钳成
+    /// (-210,-1050) 1920x1050，而副屏是 (-210,-1080) 1920x1080）。
     ///
     /// 先摆位置再定尺寸，然后把位置再压一遍 —— 在旧位置上直接放大，
     /// Cocoa 会按旧那块屏来约束尺寸。
-    private static func cover(_ win: AXUIElement, _ t: DisplayInfo) -> Bool {
+    private static func cover(_ win: AXUIElement, _ t: DisplayInfo,
+                              _ app: NSRunningApplication) -> Bool {
         func set(_ attr: String, _ value: AXValue?) {
             guard let v = value else { return }
             AXUIElementSetAttributeValue(win, attr as CFString, v)
+        }
+        // 把菜单栏从目标屏赶走。用 Finder 而不是启动器自己 —— 这会儿启动器
+        // 已经切成 accessory、也没有窗口了，激活它拿不到菜单栏。
+        let finder = NSWorkspace.shared.runningApplications
+            .first { $0.bundleIdentifier == "com.apple.finder" }
+        finder?.activate()
+        Thread.sleep(forTimeInterval: 0.8)
+        defer {
+            // 摆完把游戏放回前台，玩家本来就要它在前台
+            app.activate()
         }
         for _ in 0..<20 {
             var origin = t.bounds.origin
@@ -217,7 +240,8 @@ enum Native {
     static func place(on target: DisplayInfo?, fill: FillMode,
                       timeout: TimeInterval = 120) -> Bool {
         guard trusted,
-              let win = waitForWindow(timeout, needsFullScreenButton: fill == .nativeFullScreen)
+              let (win, app) = waitForWindow(timeout,
+                                             needsFullScreenButton: fill == .nativeFullScreen)
         else { return false }
 
         let needsMove = !(target?.isMain ?? true)
@@ -232,7 +256,7 @@ enum Native {
 
         case .coverScreen:
             guard let t = target ?? Displays.main else { return false }
-            return cover(win, t)
+            return cover(win, t, app)
 
         case .nativeFullScreen:
             break
