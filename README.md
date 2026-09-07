@@ -699,11 +699,13 @@ bin/auth-check.py <账号> <密码>
 | `MinPetitionSigns` | 9 | **0** | 公会签名数。买了公会注册表直接交给公会管理员就能建会。副作用：0 个签名即"已满"，所以别人也签不了（单机无所谓）|
 | `MailDeliveryDelay` | 3600 | **0** | 给自己小号寄东西不用等一小时 |
 | `Item.PreventDataMining` | 1 | **0** | 允许查询没拿到过的物品，AtlasLoot 里的物品链接才点得开 |
+| `MaxPrimaryTradeSkill` | 2 | **9** | 主专业上限。原版 9 个（炼金 / 锻造 / 附魔 / 工程 / 草药 / 制皮 / 采矿 / 剥皮 / 裁缝）。烹饪、急救、钓鱼是副专业，本来就没有人数上限 |
 
 改完要 `docker compose restart mangosd`。备份在 `config/mangosd.conf.bak.*`。
 
-没动但可以考虑的：`AllFlightPaths`（0 → 1 直接开全部飞行点）、`StartPlayerLevel`、
-`MaxPrimaryTradeSkill`。
+`InitPrimaryProfessions()` 每次登录都会按这个值重算空位，再减去已经学会的主专业，所以已有角色不用新建——重启后重新登录就能去训练师学第三个。1.12 客户端的技能面板和法术书会列出所有已学专业；训练师按钮灰不灰是服务端看剩余空位，不是客户端写死两人。
+
+没动但可以考虑的：`AllFlightPaths`（0 → 1 直接开全部飞行点）、`StartPlayerLevel`。
 
 ### storage/database/custom-sql/20-solo-raid-access.sql
 
