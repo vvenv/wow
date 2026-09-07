@@ -1,20 +1,38 @@
 #!/usr/bin/env python3
 """跨阵营：把部落/联盟之间的初始声望从「仇恨 + 开战」改成「中立 + 停战」。
 
-为什么改 Faction.dbc 而不是改 NPC 的 faction：VMaNGOS 的
-WorldObject::GetFactionReactionTo() 里，只要 NPC 所属阵营
-CanHaveReputation()（reputationListID >= 0），敌对与否就**完全**由玩家对该
-阵营的声望等级决定，FactionTemplate.dbc 的 alliance/horde 掩码整段被跳过。
-主城 NPC、城卫、任务发布者用的都是这类有声望条的阵营（暴风城 72、铁炉堡 47
-……），所以只要把「部落种族对暴风城」的起始声望从 -42000(仇恨) 抬到 0(中立)，
-整座城就自动不再动手。
+⚠️ **2026-09-07：这个脚本对服务端没有作用，真正生效的是
+`storage/database/custom-sql/30-cross-faction.sql` 第 7 段。**
+
+VMaNGOS 为了同时支持多个客户端 build，把阵营数据搬进了世界库（`faction` 表，带一个
+`build` 列），`ReputationMgr` 从头到尾读的是数据库，不是 DBC：
+
+    void ReputationMgr::Initialize() {
+        for (auto const& itr : sObjectMgr.GetFactionMap()) {          // <- 世界库
+            newFaction.Flags = GetDefaultStateFlags(factionEntry);
+
+    void ReputationMgr::LoadFromDB(...) {
+        FactionEntry const* e = sObjectMgr.GetFactionEntry(...);      // <- 世界库
+        ...
+        if (GetRank(e) <= REP_HOSTILE)
+            SetAtWar(faction, true);      // 起始 -42000 = 仇恨 = 每次登录重新开战
+
+最后那句是关键：只要 `faction` 表里起始声望还是 -42000，**每次登录都会重新按上开战位**，
+在 `character_reputation` 里手动清成停战只能撑到下一次登录。这就是为什么
+2026-09-07 之前「DBC 明明打了补丁，联盟 NPC 还是照打」。
+
+脚本本身保留，改的东西和 SQL 那一段完全一致，只是为了让提取出来的 DBC 和数据库
+不要各说各话（万一以后有别的代码路径去读 `Faction.dbc`）。**光跑它没有任何效果。**
+
+以下是它实际做的事：直接改
+`storage/mangosd/extracted-data/5875/dbc/Faction.dbc`，13 个声望槽的 base 从 -42000
+改成 0、去掉 `FACTION_FLAG_AT_WAR`。
 
 客户端一个字节都不用改：1.12 客户端算名牌颜色用的是服务器下发的
 SMSG_INITIALIZE_FACTIONS（standing + flags），不是本地 DBC 的初始值。
 
 character_reputation.standing 存的是**相对 base 的增量**，所以已有角色的
-standing=0 会跟着 base 一起变成中立，不需要动。要动的只有存下来的 flags
-（见 storage/database/custom-sql/30-cross-faction.sql）。
+standing=0 会跟着 base 一起变成中立。存下来的 flags 见 SQL 第 4 段。
 
 战场阵营（奥山霜狼/石锤、战歌、阿拉希）故意不碰，否则 BG 会坏掉。
 安其拉、木喉、辛迪加、血帆这些「两边都仇视」的中立阵营也不碰。
@@ -22,7 +40,6 @@ standing=0 会跟着 base 一起变成中立，不需要动。要动的只有存
 用法：
     bin/patch-faction-dbc.py            # 打补丁（幂等）
     bin/patch-faction-dbc.py --revert   # 从 .orig 备份恢复
-改完必须重启 mangosd，DBC 只在启动时加载一次。
 """
 import os, shutil, struct, sys
 

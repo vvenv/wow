@@ -36,3 +36,6 @@ q "select name, map, round(position_x,2), round(position_y,2), round(position_z,
 
 python3 "$ROOT/bin/gmbox-gen-data.py" "$TMP" "$ADDON"
 
+# Reputations come out of Faction.dbc, not the world DB, so that half has its
+# own script; run it here too so one command refreshes the whole addon.
+python3 "$ROOT/bin/gmbox-gen-faction.py"

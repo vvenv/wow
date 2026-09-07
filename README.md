@@ -106,7 +106,10 @@ ssh "$SERVER_SSH_USER@$SERVER_HOST" \
 | `bin/mangos-console.py` | 向 mangosd 控制台发命令（pty attach，安全脱离）|
 | `bin/auth-check.py` | 独立 SRP6 客户端，端到端验证认证链路（`SERVER_HOST=$SERVER_HOST` 验线上）|
 | `bin/set-realmlist.sh` | 切两个客户端连的服务器：`online` / `local` / 任意地址 |
-| `bin/gmbox-gen-data.sh` | 重新生成 GM Box 插件的传送点/物品数据表 |
+| `bin/gmbox-gen-data.sh` | 重新生成 GM Box 插件的传送点/物品数据表（末尾会顺带调下面那个） |
+| `bin/gmbox-gen-faction.py` | 重新生成 GM Box 的阵营/声望表（读 `Faction.dbc`，不读世界库） |
+| `bin/patch-faction-dbc.py` | ⚠️ 对服务端无效，只为让 DBC 和世界库一致；真正生效的是 `30-cross-faction.sql` |
+| `bin/patch-taxinodes-dbc.py` | ⚠️ 同上，航点数据也在世界库的 `taxi_nodes` 表里 |
 | `bin/play-wine.sh` | 用 WoWSilicon 的 Wine 启动指定客户端目录 |
 | `bin/install-addons.sh` | 安装/更新那套 1.12 插件（支持 `LOCALE=` / `DEST=`）|
 | `launcher/build.sh` | 把 `launcher/*.swift` 编译成 `WoW.app`（改了启动器要重跑）|
@@ -525,7 +528,7 @@ Auctionator、大脚/BigFoot 这些是 Classic Era（1.13+）的，调用的 API
 | **Bagshui** 1.0.5 | `/bs` | 合并背包 + 自动分类，Bagnon 的位置 | `absir/Bagshui`（镜像，作者 veechs）|
 | **Atlas / AtlasLoot / AtlasQuest** | `/atlas` `/al` | 副本地图、Boss 掉落表、副本任务 | `Cabro/Atlas`（1.12 backport）|
 | **SuperMacro** | `/smacro` | 突破宏长度限制、宏库、`/run` 辅助 | `Monteo/SuperMacro` |
-| **GM Box** | `/gm` `/gt` `/gi` | 自制 GM 面板，见 `client/Interface/AddOns/GMBox/README.md` | 本仓库 |
+| **GM Box** | `/gm` `/gt` `/gi` `/gr` | 自制 GM 面板（传送 / 物品 / 声望 / 工具），见 `client/Interface/AddOns/GMBox/README.md` | 本仓库 |
 | **CleverMacro** | 宏编辑器 | 给 1.12 补条件宏（`[mod:alt]` `[harm]` `[stance]`），和 SuperMacro 互补不冲突 | `DanielAdolfsson/CleverMacro` |
 
 ### pfUI —— 整套 UI 替换
@@ -769,8 +772,33 @@ VMaNGOS 的 `WorldObject::GetFactionReactionTo()`（`src/game/Objects/Object.cpp
 
 ### 改了什么
 
-`bin/patch-faction-dbc.py` —— 直接改
-`storage/mangosd/extracted-data/5875/dbc/Faction.dbc`，13 个声望槽的
+> ⚠️ **2026-09-07 的重大更正：阵营数据不在 DBC 里，在世界库里。**
+> VMaNGOS 为了同时支持多个客户端 build，把阵营、阵营模板、航点全搬进了世界库
+> （`faction` / `faction_template` / `taxi_nodes`，每张表都带一个 `build` 列，
+> 服务端取「不超过客户端 build 的最新一行」）。`ReputationMgr` 从头到尾没碰过
+> `Faction.dbc`：
+>
+> ```cpp
+> void ReputationMgr::Initialize() {
+>     for (auto const& itr : sObjectMgr.GetFactionMap()) {        // <- 世界库
+>         newFaction.Flags = GetDefaultStateFlags(factionEntry);
+>
+> void ReputationMgr::LoadFromDB(...) {
+>     FactionEntry const* e = sObjectMgr.GetFactionEntry(...);    // <- 世界库
+>     ...
+>     if (GetRank(e) <= REP_HOSTILE)
+>         SetAtWar(faction, true);   // 起始 -42000 = 仇恨 = 每次登录重新开战
+> ```
+>
+> 最后那句是关键：只要 `faction` 表里起始声望还是 -42000，**每次登录都会重新按上
+> 开战位**，在 `character_reputation` 里手动清成停战只能撑到下一次登录。所以
+> 2026-09-07 之前这一整节都是错的 —— DBC 补丁打了，服务端根本不看，联盟 NPC 照打。
+> 真正生效的是 `30-cross-faction.sql` 第 7 段（阵营）和第 8 段（航点）；两个
+> `bin/patch-*-dbc.py` 保留下来只是让提取出来的 DBC 和数据库不各说各话，
+> **单跑它们没有任何效果**。
+
+`30-cross-faction.sql` 第 7 段（以及和它内容一致、但不起作用的
+`bin/patch-faction-dbc.py`）—— 13 个声望槽的
 `base` 从 -42000 改成 0、去掉 `FACTION_FLAG_AT_WAR`：
 
 | 阵营 | id | flags 结果 |
@@ -792,6 +820,11 @@ flags 用 `VISIBLE` 而不是 `PEACE_FORCED`，是为了让这些阵营出现在
 | `quest_template.RequiredRaces = 0` | 696 | 332 个联盟专属 + 309 个部落专属 + 各族起始任务链 |
 | `item_template.allowable_race = -1` | 1769 | 不放开的话交完任务奖励是灰的。坐骑也一起放开 |
 | `creature_template.trainer_race = 0` | 32 | 主要是各族坐骑训练师，不放开会说"我没什么可教你的" |
+| `character_reputation.flags &= ~AT_WAR` | 14 | 已有角色存下来的开战位，见下一节 |
+| `game_graveyard_zone.faction = 0` | 80 | 不然死在对方地图要横穿大陆跑尸 |
+| `creature_template.faction` 换模板 | 498 | 没有声望条的那批阵营，见下一节 |
+| `faction` 起始声望 / flags | 9 行 × 4 档 | **真正让 NPC 不动手的那一条**，见上面的更正 |
+| `taxi_nodes` 补 mount 槽 | 62 | 对方阵营的飞行管理员才认得出当前航点 |
 
 阵营坐骑的**声望**门槛（崇敬）保留没动——现在部落也刷得动暴风城声望，正好当个目标。
 
@@ -799,12 +832,60 @@ flags 用 `VISIBLE` 而不是 `PEACE_FORCED`，是为了让这些阵营出现在
 碰了 BG 会坏掉。安其拉、木喉、辛迪加、血帆这些两边都仇视的中立阵营同理。
 战场出口和侏儒区传送器的 condition 也还是阵营判断，仍然没碰。
 
+### 没有声望条的阵营（2026-09-07 补上）
+
+`Faction.dbc` 那半只对**有声望条的阵营**管用。VMaNGOS 判反应是两条分支：
+
+```cpp
+if (FactionEntry const* e = sFactionStore.LookupEntry(pTemplate->faction))
+    if (e->CanHaveReputation())
+        return pPlayer->GetReputationMgr().GetRank(e);   // 走声望
+// 否则：FactionTemplate 的 hostileMask & 对方的 ourMask
+```
+
+暴风城/铁炉堡/达纳苏斯/诺莫瑞根走上面那条，所以城里的卫兵和 NPC 早就不动手了。
+但另有一批联盟 NPC 挂的阵营**没有声望条**（`reputationListID = -1`），走的是下面
+那条掩码分支，掩码里写死「敌视部落组」—— 声望刷到崇拜也没用。这就是
+「进了联盟地盘还是被打」剩下的那一半，一共 1894 只：
+
+| 阵营 | 生物数 | 在哪 |
+|---|---|---|
+| 189 Alliance Generic | 720 | 联盟所有区域的通用 NPC |
+| 61 Dalaran | 481 | 奥特兰克那个魔法罩子 |
+| 108 Theramore | 441 | 尘泥沼泽塞拉摩岛整座城 |
+| 71 Hillsbrad Militia | 120 | 南海镇民兵 |
+| 269 Silvermoon Remnant | 81 | 辛特兰奎尔丹尼小屋的高等精灵 |
+| 49 Human, Night Watch | 16 | 夜色镇守夜人 |
+
+修法（`30-cross-faction.sql` 第 6 段）：把 `creature_template.faction`（存的是
+**FactionTemplate id**，不是阵营 id）换成一个**掩码和 flags 完全相同、但阵营有
+声望条**的模板。只有 `faction` 那一个字段变，`ourMask` / `friendlyMask` /
+`hostileMask` / `enemy[]` / `friend[]` 一个字节没动，所以 NPC 之间打不打架完全不变
+—— 这几个阵营 id 在整张 `FactionTemplate.dbc` 里除了自引用没有第三方引用，查过了。
+
+**为什么不是直接改 `FactionTemplate.dbc` 的 `hostileMask`**：那样服务端确实不打你，
+但客户端算名牌颜色用的是**它自己那份** `FactionTemplate.dbc` —— 服务端只下发
+`UNIT_FIELD_FACTIONTEMPLATE` 这个 id。名牌照样红，右键就是砍人不是对话，任务还是
+接不了。换 id 两边同时生效：客户端拿到新 id，查到一个有声望条的阵营，再套上
+`SMSG_INITIALIZE_FACTIONS` 里那份中立声望，名牌变黄，右键出对话。
+
+镜像那半也一起做了（部落通用 66 共 514 只、辛特兰雷文德巨魔 893 共 35 只）。
+奥特兰克山羊（模板 1274 / 1275）没有对应的声望阵营，换成模板 7 —— 同阵营里对谁都
+中立的那一个，客户端光看掩码就是中立，不需要声望。
+
+改完重启 mangosd（`creature_template` 是启动时载入的）。验证脚本的结论是：
+两个方向都是 **0 只**「一边友好、另一边硬敌对且没有声望条」的生物。
+
 ### 已有角色
 
 `character_reputation.standing` 存的是**相对 base 的增量**，所以老角色的
-`standing = 0` 会跟着新 base 一起变成中立，不用动。要动的只有存下来的 `flags`
-（`ReputationMgr::LoadFromDB` 会拿 DB 里的 `AT_WAR` 位重新 `SetAtWar(true)`）。
-已经对现有角色执行过一次：
+`standing = 0` 会跟着新 base 一起变成中立，不用动。要动的只有存下来的 `flags`：
+`ReputationMgr::LoadFromDB()` 会拿 DB 里的 `AT_WAR` 位重新 `SetAtWar(true)`，而
+`Player::GetReactionTo()` 一看到 `IsAtWar()` 就直接返回 `REP_HOSTILE`，声望等级
+根本不看。
+
+**这一步以前是手敲的，2026-09-07 补进了 `30-cross-faction.sql` 的第 4 段**，
+所以现在跟着数据库容器启动自动执行，不会再漏：
 
 ```sql
 UPDATE characters.character_reputation SET flags = 0x01
@@ -813,28 +894,69 @@ UPDATE characters.character_reputation SET flags = flags & ~0x02
   WHERE faction IN (469,67) AND (flags & 0x02);
 ```
 
+漏掉它的症状是「DBC 补丁明明打了，暴风城卫兵还是砍我，联盟任务也接不了」——
+两个症状同一个根：敌对状态下 `GetNPCIfCanInteractWith()` 连对话都不给，
+`quest_template.RequiredRaces` 清成 0 也没机会生效。
+
+`flags & 0x02` 这个条件让它只碰真正带开战位的行，本方阵营那几行不动，重复执行是
+空操作。副作用是手动宣的战会在下次数据库容器启动时被停战回去，声望面板里再点一次
+即可。
+
+⚠️ **执行时角色必须全部离线。** 在线角色的 `ReputationMgr` 是登录那一刻从 DB 读进
+内存的，下线时 `SaveToDB()` 会把那份内存状态原样写回来 —— 也就是把刚改好的
+`flags` 又覆盖成开战。2026-09-07 就踩过一次：SQL 跑完看着是对的，角色一下线
+14 行全变回去了。所以顺序是**先退出客户端，再跑 SQL，然后登录**；
+`select count(*) from characters where online = 1` 是 0 才算安全。
+
 新建的角色不需要这一步，创建时直接读新 DBC。
 
-### 还没跨的：飞行点
+### 飞行点（2026-09-07 补上）
 
-`ObjectMgr::GetNearestTaxiNode()` 按 `TaxiNodesEntry::MountCreatureID[team]` 过滤，
-联盟航点的部落槽是 0，所以部落角色在暴风城飞行管理员那里拿不到航线。
-要跨得改 `TaxiNodes.dbc` 把两个槽都填上，而且客户端的 `TaxiNodes.dbc` 得跟着改
-（要打 `patch-B.MPQ`），不像声望这样单边就够。暂时的替代：`mangosd.conf` 的
-`AllFlightPaths = 1`，或者 GM 的 `.go`。
+`ObjectMgr::GetNearestTaxiNode()` 按 `TaxiNodesEntry::MountCreatureID[team]` 过滤
+（槽 0 = 部落，槽 1 = 联盟），联盟航点的部落槽是 0，所以部落角色站在暴风城的
+狮鹫管理员面前解析不出"当前航点"，`SendTaxiMenu()` 直接 return —— 不是"没有航线"，
+是飞行地图根本不弹。`30-cross-faction.sql` 第 8 段把只有一边的航点补成两边都有，
+62 行（`taxi_nodes` 每个航点每个 build 各一行）；坐骑按大陆取（东部王国狮鹫 541 /
+卡利姆多角鹰兽 3837，部落两边都是双足飞龙 2224），飞起来的模型跟当地风格一致。
+
+**同名的孪生航点不补**：藏宝海湾、加基森、永望镇、月光林地、圣光之愿、
+塞纳里奥要塞、瑟银哨塔这七处 Blizzard 本来就是一边一个航点，各自连着自己阵营的
+航线网。两个都放开的话 `GetNearestTaxiNode()` 取"最近"会在两个几乎重合的航点之间
+乱挑，部落玩家在藏宝海湾可能被解析成联盟那个航点，从藏宝海湾飞格罗姆高反而会坏掉。
+认孪生用的是**名字**而不只是距离 —— 暴风城航点旁边 204 码就有一个
+`Generic, World target` 的僵尸行，只看距离会把最该补的那个跳过去。
+
+`TaxiPath.dbc` 没动，两张航线网仍然是分开的。所以效果是**走到对方任意一个航点，
+那整张网就整个开给你**，不是从奥格瑞玛直飞暴风城。
+
+> 两处更正。其一：这里最早写的是"客户端的 `TaxiNodes.dbc` 得跟着改（要打
+> `patch-B.MPQ`）"。`MountCreatureID` 是服务端用来过滤航点和挑坐骑模型的，客户端
+> 画飞行地图靠的是服务端发的 `SMSG_SHOWTAXINODES` 里那份 taximask，**按这个推断
+> 单边就够**——但没有实测过。要是飞行地图能弹出来、对方的航点却不画，那就说明
+> 客户端也在过滤，那时候才需要 `patch-B.MPQ`。
+>
+> 其二：接着又写成改 `TaxiNodes.dbc`，还是错的 —— 航点在世界库的 `taxi_nodes`
+> 表里（见本节开头的更正）。
+>
+> 顺带：`AllFlightPaths = 1` 替代不了这一段。它只是把 taximask 全点亮，
+> `GetNearestTaxiNode()` 那道阵营过滤照样在，对方的飞行管理员还是不理你。
 
 ### 恢复
 
 ```
-bin/patch-faction-dbc.py --revert && docker compose restart mangosd
+# 阵营和航点都在世界库里，下面那个 SQL 文件就够了；两个 DBC 脚本可跑可不跑
+bin/patch-faction-dbc.py --revert
+bin/patch-taxinodes-dbc.py --revert
 rm vmangos-deploy/storage/database/custom-sql/30-cross-faction.sql
 docker compose exec -T database sh -c 'mariadb -umangos -pmangos mangos' \
   < vmangos-deploy/storage/database/custom-sql/revert-cross-faction.sql.example
 ```
 
-⚠️ `Faction.dbc` 的补丁在**提取出来的服务端数据**里，重跑 `bin/02-extract-server-data.sh`
-会被原始 DBC 覆盖，之后要再跑一次 `bin/patch-faction-dbc.py`。原始文件留在同目录的
-`Faction.dbc.orig`。
+⚠️ 两个 DBC 补丁都在**提取出来的服务端数据**里，重跑 `bin/02-extract-server-data.sh`
+会被原始 DBC 覆盖，之后 `bin/patch-faction-dbc.py` 和 `bin/patch-taxinodes-dbc.py`
+各要再跑一次。原始文件留在同目录的 `Faction.dbc.orig` / `TaxiNodes.dbc.orig`。
+不过这两个补丁**对服务端本来就没作用**，重新提取不会把跨阵营弄坏 —— 真正的改动在
+世界库里，`30-cross-faction.sql` 每次数据库容器启动都会重新执行一遍。
 
 ## 已知状态
 
