@@ -51,6 +51,10 @@ PRESET = {
 
     # -- a little polish ----------------------------------------------------
     ("appearance", "border", "shadow"): "1",
+
+    # leftover greys (skinning scraps, fishing junk) sell themselves at a vendor.
+    # combat greys are already converted to corpse copper server-side.
+    ("global", "autosell"): "1",
 }
 
 

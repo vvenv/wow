@@ -602,7 +602,7 @@ bin/pfui-travel-preset.py              # 真改，原文件留一份 .pre-travel
 
 **客户端必须先完全退出。** WoW 退出登录时会整份重写 SavedVariables，游戏开着改等于白改。
 
-改的 15 项：
+改的 16 项：
 
 | 项 | 改成 | 为什么 |
 |---|---|---|
@@ -616,6 +616,7 @@ bin/pfui-travel-preset.py              # 真改，原文件留一份 .pre-travel
 | `disabled.targettargettarget` | 关模块 | 目标的目标的目标，团本解析用的 |
 | `disabled.updatenotify` | 关模块 | 离线服，不用查 pfUI 更新 |
 | `border.shadow` | 开 | 边框加投影，边界更清楚 |
+| `global.autosell` | 开 | 进商人自动卖掉灰色。战斗灰已经在尸体上变成铜币；剥皮和钓鱼留下的灰走这一条 |
 
 动作条**一个都没动**。查过服务器 `character_action` 表：Flora 在 bar1/3/4/5/6 上一共
 放了 31 个按钮，Alice 29 个——那几条条不是摆设，关掉会让按钮点不到。想少几条条得先
@@ -727,6 +728,23 @@ bin/auth-check.py <账号> <密码>
 
 恢复原样：删掉 `20-solo-raid-access.sql`，把同目录的
 `revert-solo-raid-access.sql.example` 改名成 `.sql` 跑一次。
+
+### storage/database/custom-sql/50-solo-travel-chores.sql
+
+拆旅行路上的家务，不拆路的质地。
+
+| 改动 | 说明 |
+|---|---|
+| 战斗掉落里的灰色按售价折进 `gold_min` / `gold_max`，再从 `creature_loot_template` 拿掉 | 尸体写铜币，不占格子。任务灰、剥皮灰、钓鱼垃圾留下 |
+| `playercreateinfo_item` 每个种族/职业 4 个 Large Knapsack（1725，12 格） | 只影响新号。Alice / Flora 已经是无底包，没动 |
+| 旅店老板卖弹药和施法材料（含轻羽毛） | 四个本来没有商人位的旅店补上 `VENDOR`。只记录新插的行，恢复时不误删面包 |
+
+修理不必再打折：`DurabilityLoss.Enable` 已经是 0。任务赏金也不抬——灰色变成铜币之后，那截钱还在尸体上。
+
+剥皮和钓鱼留下的灰，进商人时由 pfUI `global.autosell` 卖掉。
+
+恢复原样：删掉 `50-solo-travel-chores.sql`，把同目录的
+`revert-solo-travel-chores.sql.example` 改名成 `.sql` 跑一次。
 
 ### 已有的两处（更早做的）
 
